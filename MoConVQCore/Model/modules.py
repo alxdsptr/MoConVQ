@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from opt_einsum import contract
 import math
 from MoConVQCore.Utils.pytorch_utils import *
-
+import time
 
 class ConditionalEncoder(nn.Module):
     def __init__(self, input_size, condition_size, output_size, var, **params) -> None:
@@ -116,6 +116,8 @@ class GatingMixedDecoder(nn.Module):
         )
 
     def forward(self, z: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
+        t0 = time.time()
+
         coefficients = F.softmax(self.gate(torch.cat((z, c), dim=-1)), dim=-1)  # (batch_size, num_experts)
         # layer 0
         input_x = torch.cat((z, c), dim=-1)  # (batch_size, hid)
@@ -156,6 +158,9 @@ class GatingMixedDecoder(nn.Module):
         mixed_bias: torch.Tensor = torch.einsum('be,ek->bk', coefficients, self.b4)  # (batch_size, 512), contract
         mixed_input: torch.Tensor = torch.einsum('be,bj,ejk->bk', coefficients, input_x, self.w4)
         layer_out: torch.Tensor = mixed_input + mixed_bias
+
+        t1 = time.time()
+        # print(f'inference time: {t1-t0}')
 
         return layer_out
 

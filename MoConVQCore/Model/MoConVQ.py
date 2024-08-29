@@ -54,6 +54,8 @@ class MoConVQ(nn.Module):
             actor_num_experts= kargs['actor_num_experts'],
             actor_gate_hidden_layer_size= kargs['actor_gate_hidden_layer_size'],
         ).to(ptu.device)
+
+        print(self.agent)
         
         self.future_project = nn.Linear(future_size, future_size).to(ptu.device)
         
@@ -565,8 +567,8 @@ class MoConVQ(nn.Module):
     @staticmethod
     def set_seed(seed):
         torch.manual_seed(seed)
-        np.random.seed(seed)
-        random.seed(seed)
+        # np.random.seed(seed)
+        # random.seed(seed)
         
     def try_load_world_model(self, data_file):
         data = torch.load(data_file, map_location=ptu.device)

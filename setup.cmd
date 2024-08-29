@@ -4,8 +4,8 @@ conda activate moconvq
 
 
 echo "install pytorch"
-conda install pytorch torchvision torchaudio pytorch-cuda=11.8 -c pytorch -c nvidia
-conda install cuda-nvcc=12.4.131
+mamba install pytorch torchvision torchaudio pytorch-cuda=11.8 -c pytorch -c nvidia
+mamba install cuda-nvcc=12.4.131
 
 echo "building rotation library"
 cd .\diff-quaternion\TorchRotation\

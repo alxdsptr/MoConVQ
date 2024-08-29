@@ -16,9 +16,14 @@ def text2bert(text):
     global bert, bert_tokenizer
     encoded_input = bert_tokenizer(text, return_tensors='pt', padding=True, truncation=True, max_length=256)
     encoded_input = {key: value.to(ptu.device) for key, value in encoded_input.items()}
+    decoder_input_ids = bert_tokenizer.encode(bert_tokenizer.pad_token, return_tensors="pt").to(ptu.device)
     with torch.no_grad():
-        output = bert(**encoded_input)
-    return output.last_hidden_state, ~encoded_input['attention_mask'].bool()
+        output = bert(
+            input_ids=encoded_input["input_ids"],
+            attention_mask=encoded_input["attention_mask"],
+            decoder_input_ids=decoder_input_ids
+        )
+    return output.encoder_last_hidden_state, ~encoded_input['attention_mask'].bool()
 
 class gpt_config():
     def __init__(self):
@@ -68,7 +73,9 @@ class Trainer():
         cur_embedding, _ = gpt.sample(clip_feature, bert_feature, bert_mask)
         # print(_.view(-1, 4))
         dconv = agent_.posterior.decoder.decode_dynamic(cur_embedding)
-        
+        for i in range(10):
+            self.track_latent(dconv, agent_, i, dir)
+        '''
         import VclSimuBackend
         CharacterToBVH = VclSimuBackend.ODESim.CharacterTOBVH
         saver = CharacterToBVH(agent_.env.sim_character, 120)
@@ -97,27 +104,83 @@ class Trainer():
             observation = new_observation
             
         saver.to_file(os.path.join(dir,f'evaluate_gpt{idx}.bvh'))
+        '''
+    def track_latent(self, dconv, agent_, idx, dir):
+        import VclSimuBackend
+        CharacterToBVH = VclSimuBackend.ODESim.CharacterTOBVH
+        saver = CharacterToBVH(agent_.env.sim_character, 120)
+        saver.bvh_hierarchy_no_root()
+
+        observation, info = agent_.env.reset(0)
+
+        for i in range(dconv.shape[1]):
+            obs = observation['observation']
+            action, info = agent_.act_tracking(
+                obs_history=[obs.reshape(1, 323)],
+                target_latent=dconv[:, i],
+            )
+
+            action = ptu.to_numpy(action).flatten()
+
+            for i in range(6):
+                saver.append_no_root_to_buffer()
+                if i == 0:
+                    step_generator = agent_.env.step_core(action, using_yield=True)
+                info = next(step_generator)
+
+            try:
+                info_ = next(step_generator)
+            except StopIteration as e:
+                info_ = e.value
+            new_observation, rwd, done, info = info_
+            observation = new_observation
+
+        saver.to_file(os.path.join(dir, f'track{idx}.bvh'))
+
 
 if __name__ == '__main__':
     from moconvq_builder import build_agent
     device = 0
-    agent, env = build_agent(gpu = device)
-    ptu.init_gpu(True, gpu_id=device)
+    # agent, env = build_agent(gpu = device)
+    # ptu.init_gpu(True, gpu_id=device)
+    agent, env = build_agent()
+    # ptu.init_gpu(False)
+
+    # from transformers import T5Tokenizer, T5EncoderModel
+    # bert_tokenizer = T5Tokenizer.from_pretrained('t5-large', resume_download=True)
     
-    from transformers import T5Tokenizer, T5EncoderModel
-    bert_tokenizer = T5Tokenizer.from_pretrained('t5-large', resume_download=True)
-    
-    bert = T5EncoderModel.from_pretrained('t5-large', resume_download=True).to(ptu.device)
+    # bert = T5EncoderModel.from_pretrained('t5-large', resume_download=True).to(ptu.device)
+    from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+
+    model_path = "./hf"
+    # bert_tokenizer = AutoTokenizer.from_pretrained("google-t5/t5-large")
+    # bert = AutoModelForSeq2SeqLM.from_pretrained("google-t5/t5-large")
+    bert_tokenizer = AutoTokenizer.from_pretrained(model_path)
+    bert = AutoModelForSeq2SeqLM.from_pretrained(model_path).to(ptu.device)
+
+
     bert.eval()
     
     agent.simple_load(r'moconvq_base.data', strict=True)
     agent.eval()
     
     trainer = Trainer(device_list = [device], name = 'test', build = False)
+    # trainer = Trainer(name = 'test', build = False)
     trainer.gpt.load_state_dict(torch.load('text_generation_GPT.pth', map_location=ptu.device))
+    # trainer.gpt.load_state_dict(torch.load('text_generation_GPT.pth'))
     trainer.gpt = trainer.gpt.eval()
     
-    text = 'A person walking while talking on the phone.'
-    
-    bert_feature, bert_mask = text2bert(text)
-    trainer.evaluate_generate(text, 0, 'out/conditional', agent_=agent, env_=env, clip_feature=None, bert_feature=bert_feature, bert_mask=bert_mask)
+    # text = 'A person walking while talking on the phone.'
+    # text = 'A person walking fast.'
+    # text = input()
+    # idx = int(input())
+    text = [#'A person walking while talking on the phone.',
+            'A person walking fast.',
+            # 'A person runs for a while and turn right',
+            # 'A person walks while raising his right hand',
+            # 'A person sits down and stands up'
+            ]
+    for idx, text in enumerate(text):
+        bert_feature, bert_mask = text2bert(text)
+        trainer.evaluate_generate(text, idx, 'out/conditional', agent_=agent, env_=env, clip_feature=None,
+                                  bert_feature=bert_feature, bert_mask=bert_mask)

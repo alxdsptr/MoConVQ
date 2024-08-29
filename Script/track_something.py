@@ -1,5 +1,9 @@
 import argparse
+import random
 from enum import Enum
+
+import numpy as np
+
 from MoConVQCore.Env.vclode_track_env import VCLODETrackEnv
 from MoConVQCore.Model.MoConVQ import MoConVQ
 # from DiffusionMore.diffusion import Diffusion as MoConVQ
@@ -73,7 +77,97 @@ def build_args(parser):
 def train(agent):
     agent.train_loop()
 
+def track_by_wb(w, b, reference_obs, filename='temp.bvh'):
+    import VclSimuBackend
+    CharacterToBVH = VclSimuBackend.ODESim.CharacterTOBVH
+    saver = CharacterToBVH(agent.env.sim_character, 120)
+    saver.bvh_hierarchy_no_root()
+    observation, info = agent.env.reset(0)
+    for i in range(w.shape[0]):
+        obs = observation['observation']
+        state = obs - reference_obs[i]
+        action = np.dot(w[i], state) + b[i]
+
+        if random.random() < 0.3:
+            action = action.reshape(-1, 3)
+            for j in range(action.shape[0]):
+                temp = R.from_rotvec(action[j])
+                random_rotation = R.from_euler('XYZ', np.random.uniform(0, 5, 3), degrees=True)
+                temp = temp * random_rotation
+                action[j] = temp.as_rotvec()
+            action = action.flatten()
+
+        for i in range(6):
+            saver.append_no_root_to_buffer()
+            if i == 0:
+                step_generator = agent.env.step_core(action, using_yield=True)
+            info = next(step_generator)
+        try:
+            info_ = next(step_generator)
+        except StopIteration as e:
+            info_ = e.value
+        new_observation, rwd, done, info = info_
+        observation = new_observation
+
+    saver.to_file(os.path.join('out', filename))
+
+def train(latent):
+
+    sample_times = 100
+
+    seq_len = seq_latent.shape[1]
+    states = [np.zeros((sample_times, 323)) for _ in range(seq_len)]
+    actions = [np.zeros((sample_times, 57)) for _ in range(seq_len)]
+    for t in range(sample_times):
+        print(t)
+        observation, info = agent.env.reset(0)
+        for i in range(seq_latent.shape[1]):
+            obs = observation['observation']
+            state = obs - original_obs[i]
+
+            action, info = agent.act_tracking(
+                obs_history=[obs.reshape(1, 323)],
+                target_latent=seq_latent[:, i % period],
+            )
+            action = ptu.to_numpy(action).flatten()
+            # state_action_pair[i].append((state, action))
+            states[i][t] = state
+            actions[i][t] = action
+
+            if random.random() < 0.1:
+                action = action.reshape(-1, 3)
+                for j in range(action.shape[0]):
+                    temp = R.from_rotvec(action[j])
+                    random_rotation = R.from_euler('XYZ', np.random.uniform(0, 8, 3), degrees=True)
+                    temp = temp * random_rotation
+                    action[j] = temp.as_rotvec()
+                action = action.flatten()
+            for i in range(6):
+                # saver.append_no_root_to_buffer()
+                if i == 0:
+                    step_generator = agent.env.step_core(action, using_yield=True)
+                info = next(step_generator)
+                avel = env.sim_character.body_info.get_body_ang_velo()
+            try:
+                info_ = next(step_generator)
+            except StopIteration as e:
+                info_ = e.value
+            new_observation, rwd, done, info = info_
+            observation = new_observation
+    from sklearn.linear_model import LinearRegression
+    w = np.zeros((seq_len, 57, 323))
+    b = np.zeros((seq_len, 57))
+    for i in range(seq_len):
+        model = LinearRegression()
+        model.fit(states[i], actions[i])
+        w[i] = model.coef_
+        b[i] = model.intercept_
+    np.save('w.npy', w)
+    np.save('b.npy', b)
+
+
 if __name__ == "__main__":
+    from scipy.spatial.transform import Rotation as R
     parser = argparse.ArgumentParser()
     parser.add_argument('--config_file', default='Data/Parameters/bigdata.yml', help= 'a yaml file contains the training information')
     parser.add_argument('--seed', type = int, default=0, help='seed for root process')
@@ -115,23 +209,23 @@ if __name__ == "__main__":
         else:            
             flip = args['flip_bvh']
             motion_data.add_bvh_with_character(fn, env.sim_character, flip=flip)
-            
+
     agent.simple_load(r'moconvq_base.data', strict=True)
     agent.eval()
     agent.posterior.limit = False
-    import VclSimuBackend
-    CharacterToBVH = VclSimuBackend.ODESim.CharacterTOBVH
+    # import VclSimuBackend
+    # CharacterToBVH = VclSimuBackend.ODESim.CharacterTOBVH
     
     
-    saver = CharacterToBVH(agent.env.sim_character, 120)
-    saver.bvh_hierarchy_no_root()
+    # saver = CharacterToBVH(agent.env.sim_character, 120)
+    # saver.bvh_hierarchy_no_root()
     
-    observation, info = agent.env.reset(0)
-    
+
     period = 1000000
     
     momentum_list, net_force_list, total_momentum = [], [], []
     info = agent.encode_seq_all(motion_data.observation, motion_data.observation)
+    original_obs = motion_data.observation
     
     '''
     info:
@@ -143,26 +237,12 @@ if __name__ == "__main__":
     
     # decode the latent_vq with simulator, and save the motion
     seq_latent = info['latent_dynamic']
-    for i in range(seq_latent.shape[1]):
-        obs = observation['observation']
-        
-        action, info = agent.act_tracking(
-            obs_history = [obs.reshape(1,323)],
-            target_latent = seq_latent[:,i%period],
-        )
-        action = ptu.to_numpy(action).flatten()
-        for i in range(6):
-            saver.append_no_root_to_buffer()
-            if i == 0:
-                step_generator = agent.env.step_core(action, using_yield = True)
-            info = next(step_generator)
-            avel = env.sim_character.body_info.get_body_ang_velo()
-        try:
-            info_ = next(step_generator)
-        except StopIteration as e:
-            info_ = e.value
-        new_observation, rwd, done, info = info_
-        observation = new_observation
-    import time
-    motion_name = os.path.join('out', f'track_{time.time()}.bvh')
-    saver.to_file(motion_name)
+
+    # import time
+    # motion_name = os.path.join('out', f'track_{time.time()}.bvh')
+    # saver.to_file(motion_name)
+    # train(seq_latent)
+    w = np.load('w.npy')
+    b = np.load('b.npy')
+    track_by_wb(w, b, original_obs, "linear5.bvh")
+

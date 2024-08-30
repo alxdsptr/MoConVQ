@@ -77,31 +77,55 @@ def build_args(parser):
 def train(agent):
     agent.train_loop()
 
-def track_by_wb(w, b, reference_obs, filename='temp.bvh'):
+def get_obs_needed():
+    res = []
+    def help_func(need_, offset = 0):
+        for i in range(0, len(need_), 2):
+            res.extend(list(range(need_[i] + offset, need_[i+1] + offset)))
+    need = np.array([7, 9, 11, 12, 18, 20])
+    help_func(need * 3)
+    need = np.array([0, 1, 7, 9, 11, 12, 18, 20])
+    help_func(need * 3, 180)
+    need = np.array([7, 9, 18, 20])
+    help_func(need * 3, 240)
+    res.extend([300, 320, 321, 322])
+    return np.array(res)
+
+
+def track_by_wb(w, b, reference_obs, filename='temp.bvh', indexs = None):
     import VclSimuBackend
     CharacterToBVH = VclSimuBackend.ODESim.CharacterTOBVH
     saver = CharacterToBVH(agent.env.sim_character, 120)
     saver.bvh_hierarchy_no_root()
     observation, info = agent.env.reset(0)
+
     for i in range(w.shape[0]):
         obs = observation['observation']
-        state = obs - reference_obs[i]
+        # state = obs - reference_obs[i]
+        state = obs
+        if indexs is not None:
+            state = state[indexs]
         action = np.dot(w[i], state) + b[i]
 
-        if random.random() < 0.3:
+        '''
+        if random.random() < 0.1:
             action = action.reshape(-1, 3)
             for j in range(action.shape[0]):
                 temp = R.from_rotvec(action[j])
-                random_rotation = R.from_euler('XYZ', np.random.uniform(0, 5, 3), degrees=True)
+                random_rotation = R.from_euler('XYZ', np.random.uniform(0, 12, 3), degrees=True)
                 temp = temp * random_rotation
                 action[j] = temp.as_rotvec()
             action = action.flatten()
+            '''
+        if i == 30:
+            throw_box_to_character()
 
         for i in range(6):
             saver.append_no_root_to_buffer()
             if i == 0:
                 step_generator = agent.env.step_core(action, using_yield=True)
             info = next(step_generator)
+            # body_info = env.sim_character.body_info
         try:
             info_ = next(step_generator)
         except StopIteration as e:
@@ -110,20 +134,51 @@ def track_by_wb(w, b, reference_obs, filename='temp.bvh'):
         observation = new_observation
 
     saver.to_file(os.path.join('out', filename))
+other_objects = {}
+def add_box(radius=0.5, name='box'):
+    import VclSimuBackend as ode
+    # import ModifyODE as ode
+    space, world = agent.env.scene.space, agent.env.scene.world
+    box = ode.GeomBox(space, [radius] * 3)
+    body = ode.Body(world)
+    box.body = body
+    mass = ode.Mass()
+    mass.setBox(100, radius, radius, radius)
+    body.setMass(mass)
+    # agent.other_objects[name] = body
+    other_objects[name] = body
+    body.PositionNumpy = np.array([100.0, 1.0, 0.0])
+    box.character_id = -2 - np.random.randint(0, 100)
 
-def train(latent):
+def throw_box_to_character(name='box', n_delta=None):
+    # box = agent.other_objects[name]
+    box = other_objects[name]
+    character_pos = agent.env.state[0][:3]
+    # delta = character_pos.flatten() -  box.PositionNumpy.flatten()
+    if n_delta is None:
+        delta = np.random.randn(3)
+        n_delta = delta / (delta ** 2).sum().clip(min=1.0)
+    box_pos = character_pos.flatten() - 3 * n_delta
+    box_pos[1] = max(0.3, box_pos[1])
+    box.PositionNumpy = box_pos
+    box.setLinearVel(10 * n_delta)
+def train(latent, original_obs, indexs = None):
 
-    sample_times = 100
+    sample_times = 300
 
     seq_len = seq_latent.shape[1]
-    states = [np.zeros((sample_times, 323)) for _ in range(seq_len)]
+    obs_size = 323 if indexs is None else len(indexs)
+    states = [np.zeros((sample_times, obs_size)) for _ in range(seq_len)]
     actions = [np.zeros((sample_times, 57)) for _ in range(seq_len)]
     for t in range(sample_times):
         print(t)
         observation, info = agent.env.reset(0)
         for i in range(seq_latent.shape[1]):
             obs = observation['observation']
-            state = obs - original_obs[i]
+            # state = obs - original_obs[i]
+            state = obs
+            if indexs is not None:
+                state = state[indexs]
 
             action, info = agent.act_tracking(
                 obs_history=[obs.reshape(1, 323)],
@@ -155,15 +210,15 @@ def train(latent):
             new_observation, rwd, done, info = info_
             observation = new_observation
     from sklearn.linear_model import LinearRegression
-    w = np.zeros((seq_len, 57, 323))
+    w = np.zeros((seq_len, 57, obs_size))
     b = np.zeros((seq_len, 57))
     for i in range(seq_len):
         model = LinearRegression()
         model.fit(states[i], actions[i])
         w[i] = model.coef_
         b[i] = model.intercept_
-    np.save('w.npy', w)
-    np.save('b.npy', b)
+    np.save('w3.npy', w)
+    np.save('b3.npy', b)
 
 
 if __name__ == "__main__":
@@ -238,11 +293,11 @@ if __name__ == "__main__":
     # decode the latent_vq with simulator, and save the motion
     seq_latent = info['latent_dynamic']
 
-    # import time
-    # motion_name = os.path.join('out', f'track_{time.time()}.bvh')
-    # saver.to_file(motion_name)
-    # train(seq_latent)
-    w = np.load('w.npy')
-    b = np.load('b.npy')
-    track_by_wb(w, b, original_obs, "linear5.bvh")
+    indexs = get_obs_needed()
+    add_box()
+
+    # train(seq_latent, original_obs, indexs)
+    w = np.load('w3.npy')
+    b = np.load('b3.npy')
+    track_by_wb(w, b, original_obs, "linear-box.bvh", indexs)
 

@@ -73,9 +73,8 @@ class Trainer():
         cur_embedding, _ = gpt.sample(clip_feature, bert_feature, bert_mask)
         # print(_.view(-1, 4))
         dconv = agent_.posterior.decoder.decode_dynamic(cur_embedding)
-        for i in range(10):
-            self.track_latent(dconv, agent_, i, dir)
-        '''
+        # for i in range(10):
+        #     self.track_latent(dconv, agent_, i, dir)
         import VclSimuBackend
         CharacterToBVH = VclSimuBackend.ODESim.CharacterTOBVH
         saver = CharacterToBVH(agent_.env.sim_character, 120)
@@ -104,7 +103,6 @@ class Trainer():
             observation = new_observation
             
         saver.to_file(os.path.join(dir,f'evaluate_gpt{idx}.bvh'))
-        '''
     def track_latent(self, dconv, agent_, idx, dir):
         import VclSimuBackend
         CharacterToBVH = VclSimuBackend.ODESim.CharacterTOBVH
@@ -175,7 +173,11 @@ if __name__ == '__main__':
     # text = input()
     # idx = int(input())
     text = [#'A person walking while talking on the phone.',
-            'A person walking fast.',
+            # 'A person walking fast.',
+            'A person doing a backflip',
+        'A person doing a frontflip',
+        'A person doing a cartwheel',
+        'A person doing a handstand',
             # 'A person runs for a while and turn right',
             # 'A person walks while raising his right hand',
             # 'A person sits down and stands up'

@@ -91,50 +91,16 @@ def get_obs_needed():
     res.extend([300, 320, 321, 322])
     return np.array(res)
 
-
-def track_by_wb(w, b, reference_obs, filename='temp.bvh', indexs = None):
-    import VclSimuBackend
-    CharacterToBVH = VclSimuBackend.ODESim.CharacterTOBVH
-    saver = CharacterToBVH(agent.env.sim_character, 120)
-    saver.bvh_hierarchy_no_root()
-    observation, info = agent.env.reset(0)
-
-    for i in range(w.shape[0]):
-        obs = observation['observation']
-        # state = obs - reference_obs[i]
-        state = obs
-        if indexs is not None:
-            state = state[indexs]
-        action = np.dot(w[i], state) + b[i]
-
-        '''
-        if random.random() < 0.1:
-            action = action.reshape(-1, 3)
-            for j in range(action.shape[0]):
-                temp = R.from_rotvec(action[j])
-                random_rotation = R.from_euler('XYZ', np.random.uniform(0, 12, 3), degrees=True)
-                temp = temp * random_rotation
-                action[j] = temp.as_rotvec()
-            action = action.flatten()
-            '''
-        if i == 30:
-            throw_box_to_character()
-
-        for i in range(6):
-            saver.append_no_root_to_buffer()
-            if i == 0:
-                step_generator = agent.env.step_core(action, using_yield=True)
-            info = next(step_generator)
-            # body_info = env.sim_character.body_info
-        try:
-            info_ = next(step_generator)
-        except StopIteration as e:
-            info_ = e.value
-        new_observation, rwd, done, info = info_
-        observation = new_observation
-
-    saver.to_file(os.path.join('out', filename))
-other_objects = {}
+def add_perturbation(action, prob, angle):
+    if random.random() < prob:
+        action = action.reshape(-2, 3)
+        for j in range(action.shape[-1]):
+            temp = R.from_rotvec(action[j])
+            random_rotation = R.from_euler('XYZ', np.random.uniform(-1, angle, 3), degrees=True)
+            temp = temp * random_rotation
+            action[j] = temp.as_rotvec()
+        action = action.flatten()
+    return action
 def add_box(radius=0.5, name='box'):
     import VclSimuBackend as ode
     # import ModifyODE as ode
@@ -162,18 +128,52 @@ def throw_box_to_character(name='box', n_delta=None):
     box_pos[1] = max(0.3, box_pos[1])
     box.PositionNumpy = box_pos
     box.setLinearVel(10 * n_delta)
-def train(latent, original_obs, indexs = None):
+def track_by_wb(w, b, reference_obs, filename='temp.bvh', indexs = None):
+    import VclSimuBackend
+    CharacterToBVH = VclSimuBackend.ODESim.CharacterTOBVH
+    saver = CharacterToBVH(agent.env.sim_character, 120)
+    saver.bvh_hierarchy_no_root()
+    observation, info = agent.env.reset(0)
 
-    sample_times = 300
+    for i in range(w.shape[0]):
+        obs = observation['observation']
+        # state = obs - reference_obs[i]
+        state = obs
+        if indexs is not None:
+            state = state[indexs]
+        action = np.dot(w[i], state) + b[i]
+        action = add_perturbation(action, 0.1, 8)
 
-    seq_len = seq_latent.shape[1]
+        # if i == 30:
+        #     throw_box_to_character()
+
+        for i in range(6):
+            saver.append_no_root_to_buffer()
+            if i == 0:
+                step_generator = agent.env.step_core(action, using_yield=True)
+            info = next(step_generator)
+            # body_info = env.sim_character.body_info
+        try:
+            info_ = next(step_generator)
+        except StopIteration as e:
+            info_ = e.value
+        new_observation, rwd, done, info = info_
+        observation = new_observation
+
+    saver.to_file(os.path.join('out', filename))
+other_objects = {}
+
+def train(latent, original_obs, sample_times, npyname, indexs = None):
+
+    # sample_times = 300
+    seq_len = latent.shape[1]
     obs_size = 323 if indexs is None else len(indexs)
     states = [np.zeros((sample_times, obs_size)) for _ in range(seq_len)]
     actions = [np.zeros((sample_times, 57)) for _ in range(seq_len)]
     for t in range(sample_times):
         print(t)
         observation, info = agent.env.reset(0)
-        for i in range(seq_latent.shape[1]):
+        for i in range(latent.shape[1]):
             obs = observation['observation']
             # state = obs - original_obs[i]
             state = obs
@@ -182,21 +182,14 @@ def train(latent, original_obs, indexs = None):
 
             action, info = agent.act_tracking(
                 obs_history=[obs.reshape(1, 323)],
-                target_latent=seq_latent[:, i % period],
+                target_latent=latent[:, i % period],
             )
             action = ptu.to_numpy(action).flatten()
             # state_action_pair[i].append((state, action))
             states[i][t] = state
             actions[i][t] = action
 
-            if random.random() < 0.1:
-                action = action.reshape(-1, 3)
-                for j in range(action.shape[0]):
-                    temp = R.from_rotvec(action[j])
-                    random_rotation = R.from_euler('XYZ', np.random.uniform(0, 8, 3), degrees=True)
-                    temp = temp * random_rotation
-                    action[j] = temp.as_rotvec()
-                action = action.flatten()
+            action = add_perturbation(action, 0.1, 8)
             for i in range(6):
                 # saver.append_no_root_to_buffer()
                 if i == 0:
@@ -217,8 +210,9 @@ def train(latent, original_obs, indexs = None):
         model.fit(states[i], actions[i])
         w[i] = model.coef_
         b[i] = model.intercept_
-    np.save('w3.npy', w)
-    np.save('b3.npy', b)
+    # np.save('ww.npy', w)
+    # np.save('bb.npy', b)
+    np.savez(npyname, w=w, b=b)
 
 
 if __name__ == "__main__":
@@ -294,10 +288,14 @@ if __name__ == "__main__":
     seq_latent = info['latent_dynamic']
 
     indexs = get_obs_needed()
-    add_box()
+    # add_box()
 
     # train(seq_latent, original_obs, indexs)
-    w = np.load('w3.npy')
-    b = np.load('b3.npy')
-    track_by_wb(w, b, original_obs, "linear-box.bvh", indexs)
+    # w = np.load('ww.npy')
+    # b = np.load('bb.npy')
+    train(seq_latent, original_obs, 500, 'param.npz', indexs)
+    param = np.load('param.npz')
+    w = param['w']
+    b = param['b']
+    track_by_wb(w, b, original_obs, "walk-round.bvh", indexs)
 
